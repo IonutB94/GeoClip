@@ -1,0 +1,772 @@
+<!doctype html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GeoClip</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;900&family=Manrope:wght@400;600;800&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* Layout: camera de hărți nocturnă — videoclipul pe tot ecranul, harta de ghicit în colț ca la GeoGuessr; markerul de topograf (galben semnal) e singurul accent. */
+:root{
+  --bg:#0d1117; --panel:#161c26; --panel2:#1e2633; --line:#2c3646;
+  --fg:#e8ecf2; --muted:#8b97a8; --accent:#ffb21f; --accent-ink:#1a1200;
+  --good:#3ddc97; --bad:#ff5c5c;
+  --display:"Unbounded",system-ui,sans-serif;
+  --body:"Manrope",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--body);-webkit-font-smoothing:antialiased}
+[hidden]{display:none!important}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance;letter-spacing:-.01em}
+.label{font:600 11px/1 var(--body);text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}
+.mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+.btn{border:0;border-radius:10px;padding:12px 18px;font-weight:800;background:var(--panel2);border:1px solid var(--line);transition:transform .1s,background .15s}
+.btn:hover{background:#273142}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.primary:hover{background:#ffc24d}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.small{padding:7px 12px;font-size:13px;border-radius:8px}
+.input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.input:focus{border-color:var(--accent);outline:none}
+
+/* ---------- Ecrane centrate (start, lobby, final) ---------- */
+.screen{min-height:100%;display:flex;align-items:center;justify-content:center;padding:32px max(16px,env(safe-area-inset-right)) 32px max(16px,env(safe-area-inset-left))}
+.card{width:100%;max-width:520px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:28px;display:grid;gap:20px}
+.brand{display:flex;align-items:center;gap:12px}
+.brand h1{font-size:30px;font-weight:900}
+.brand h1 span{color:var(--accent)}
+.pin{width:34px;height:34px;flex:none}
+.tag{color:var(--muted);margin:0}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1 1 140px}
+.divider{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+.err{color:var(--bad);font-size:14px;margin:0}
+
+.code-box{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--bg);border:1px dashed var(--line);border-radius:12px;padding:14px 16px}
+.code-box .code{font:700 28px/1 var(--mono);letter-spacing:.18em;color:var(--accent)}
+.players{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+.players li{display:flex;align-items:center;gap:10px;background:var(--panel2);border-radius:10px;padding:10px 12px}
+.dot{width:12px;height:12px;border-radius:50%;flex:none;box-shadow:0 0 0 2px rgba(0,0,0,.35)}
+.players .me{font-size:12px;color:var(--muted)}
+.players .pts{margin-left:auto}
+.settings{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px}
+.settings label{display:grid;gap:6px}
+.settings select{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+
+/* ---------- Ecranul de joc ---------- */
+#game{position:fixed;inset:0;background:#000;overflow:hidden}
+.video-wrap{position:absolute;inset:0}
+#yt,#yt iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+/* blochează click-urile spre YouTube și ascunde titlul / logo-ul */
+.shield{position:absolute;inset:0;z-index:2}
+.bar-top,.bar-bot{position:absolute;left:0;right:0;z-index:3;background:#000;pointer-events:none}
+.bar-top{top:0;height:12%}
+.bar-bot{bottom:0;height:11%}
+.loading{position:absolute;inset:0;z-index:4;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;background:var(--bg);color:var(--muted)}
+.spinner{width:42px;height:42px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--accent);animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+.hud{position:absolute;z-index:6;top:calc(10px + env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));display:flex;gap:10px;align-items:center;flex-wrap:wrap;pointer-events:none}
+.hud>*{pointer-events:auto}
+.chip{background:rgba(13,17,23,.85);border:1px solid var(--line);border-radius:999px;padding:7px 14px;display:flex;align-items:center;gap:8px;font-size:14px;backdrop-filter:blur(6px)}
+.chip b{font-family:var(--mono)}
+.timer b{font-size:16px}
+.timer.low{border-color:var(--bad);color:var(--bad)}
+.spacer{flex:1}
+.guessed-dots{display:flex;gap:4px}
+.guessed-dots .dot{opacity:.3}
+.guessed-dots .dot.on{opacity:1}
+
+.mapbox{position:absolute;z-index:7;right:max(14px,env(safe-area-inset-right));bottom:calc(14px + env(safe-area-inset-bottom));width:300px;display:grid;gap:8px;transition:width .2s}
+.mapbox:hover,.mapbox.big,.mapbox:focus-within{width:min(620px,60vw)}
+#guessMap{height:200px;border-radius:12px;border:2px solid var(--line);transition:height .2s;opacity:.8}
+.mapbox:hover #guessMap,.mapbox.big #guessMap,.mapbox:focus-within #guessMap{height:min(420px,55vh);opacity:1}
+.mapbox .btn{width:100%}
+.map-toggle{display:none}
+.sound-btn{position:absolute;z-index:7;left:max(14px,env(safe-area-inset-left));bottom:calc(14px + env(safe-area-inset-bottom))}
+.waiting{position:absolute;z-index:8;inset:auto 0 calc(110px + env(safe-area-inset-bottom)) 0;margin:auto;width:max-content;max-width:90vw}
+
+/* ---------- Dezvăluire ---------- */
+#reveal{position:fixed;inset:0;display:grid;grid-template-columns:1fr 360px;background:var(--bg)}
+#revealMap{height:100%;min-height:300px}
+.reveal-side{background:var(--panel);border-left:1px solid var(--line);padding:24px max(20px,env(safe-area-inset-right)) 24px 20px;display:grid;align-content:start;gap:18px;overflow:auto}
+.answer h2{font-size:22px}
+.answer p{margin:4px 0 0;color:var(--muted)}
+.results{list-style:none;padding:0;margin:0;display:grid;gap:6px}
+.results li{display:grid;grid-template-columns:auto 1fr auto;gap:4px 10px;align-items:center;background:var(--panel2);border-radius:10px;padding:10px 12px}
+.results .dist{grid-column:2;color:var(--muted);font-size:13px}
+.results .gain{grid-row:1/span 2;grid-column:3;text-align:right}
+.results .gain b{display:block;color:var(--accent);font-size:16px}
+.results .gain span{font-size:12px;color:var(--muted)}
+.yt-link{color:var(--muted);font-size:13px}
+
+/* ---------- Final ---------- */
+.podium{display:grid;gap:8px}
+.podium .first{font-size:20px}
+.winner{font-size:26px;color:var(--accent)}
+
+/* ---------- Editor clipuri ---------- */
+.modal{position:fixed;inset:0;z-index:50;background:rgba(5,8,12,.7);display:flex;align-items:center;justify-content:center;padding:16px}
+.modal .card{max-width:760px;max-height:calc(100% - 32px);overflow:auto}
+#editMap{height:260px;border-radius:12px;border:1px solid var(--line)}
+.cliplist{list-style:none;padding:0;margin:0;display:grid;gap:6px;max-height:200px;overflow:auto}
+.cliplist li{display:flex;gap:10px;align-items:center;background:var(--panel2);border-radius:8px;padding:8px 10px;font-size:14px}
+.cliplist li span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hint{font-size:13px;color:var(--muted);margin:0}
+
+.leaflet-container{background:#cfd8e3;font-family:var(--body)}
+.guess-pin{background:var(--accent);border:3px solid #fff;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+.flag-pin{font-size:30px;line-height:1;filter:drop-shadow(0 2px 3px rgba(0,0,0,.6))}
+
+.toast{position:fixed;z-index:60;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 16px;font-size:14px;max-width:90vw}
+
+@media (max-width:760px){
+  #reveal{grid-template-columns:1fr;grid-template-rows:45% 55%}
+  .reveal-side{border-left:0;border-top:1px solid var(--line)}
+  .mapbox{left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));width:auto}
+  .mapbox:hover,.mapbox:focus-within{width:auto}
+  #guessMap,.mapbox:hover #guessMap,.mapbox:focus-within #guessMap{height:0;border-width:0}
+  .mapbox.big #guessMap{height:52vh;border-width:2px;opacity:1}
+  .map-toggle{display:block}
+  .sound-btn{bottom:auto;top:calc(56px + env(safe-area-inset-top))}
+  .card{padding:22px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+
+<!-- ============ START ============ -->
+<section id="home" class="screen">
+  <div class="card">
+    <div class="brand">
+      <svg class="pin" viewBox="0 0 34 34" aria-hidden="true"><path d="M17 2C10.4 2 5 7.3 5 13.8 5 22.6 17 32 17 32s12-9.4 12-18.2C29 7.3 23.6 2 17 2z" fill="#ffb21f"/><circle cx="17" cy="13.5" r="5" fill="#0d1117"/><path d="M14.6 11.2v4.6l4.2-2.3z" fill="#ffb21f"/></svg>
+      <h1>Geo<span>Clip</span></h1>
+    </div>
+    <p class="tag">Vezi un clip filmat undeva pe Pământ. Pune pinul pe hartă. Cine ajunge mai aproape câștigă.</p>
+    <label class="label" for="nameIn">Numele tău</label>
+    <input id="nameIn" class="input" maxlength="16" placeholder="ex. Ionuț" autocomplete="nickname">
+    <div class="row">
+      <button id="createBtn" class="btn primary">Creează cameră</button>
+      <button id="soloBtn" class="btn">Joacă singur</button>
+    </div>
+    <div class="divider">sau intră la prieteni</div>
+    <div class="row">
+      <input id="codeIn" class="input mono" maxlength="5" placeholder="COD" style="text-transform:uppercase;letter-spacing:.2em">
+      <button id="joinBtn" class="btn">Intră</button>
+    </div>
+    <p id="homeErr" class="err" hidden></p>
+  </div>
+</section>
+
+<!-- ============ LOBBY ============ -->
+<section id="lobby" class="screen" hidden>
+  <div class="card">
+    <div class="brand"><h1>Cameră</h1></div>
+    <div id="codeArea" class="code-box">
+      <div><div class="label">Cod cameră</div><div id="roomCode" class="code">-----</div></div>
+      <button id="copyLink" class="btn small">Copiază linkul</button>
+    </div>
+    <div>
+      <div class="label" style="margin-bottom:8px">Jucători</div>
+      <ul id="lobbyPlayers" class="players"></ul>
+    </div>
+    <div id="hostSettings" class="settings">
+      <label><span class="label">Runde</span>
+        <select id="setRounds"><option>3</option><option selected>5</option><option>8</option><option>10</option></select></label>
+      <label><span class="label">Timp de ghicit</span>
+        <select id="setSecs"><option value="30">30 s</option><option value="60" selected>60 s</option><option value="90">90 s</option><option value="120">2 min</option></select></label>
+      <label><span class="label">Bucată din clip</span>
+        <select id="setLen"><option value="15">15 s</option><option value="30" selected>30 s</option><option value="60">60 s</option></select></label>
+      <label><span class="label">Clipuri</span>
+        <select id="setPack"><option value="lume" selected>Pachetul Lumea</option><option value="mine">Doar ale mele</option><option value="toate">Toate</option></select></label>
+    </div>
+    <p id="guestWait" class="tag" hidden>Gazda alege setările și pornește jocul…</p>
+    <div class="row" id="hostActions">
+      <button id="editClips" class="btn">Clipurile mele (<span id="myCount">0</span>)</button>
+      <button id="startBtn" class="btn primary">Pornește jocul</button>
+    </div>
+    <button id="leaveBtn" class="btn small" style="justify-self:start">Ieși</button>
+  </div>
+</section>
+
+<!-- ============ JOC ============ -->
+<section id="game" hidden>
+  <div class="video-wrap">
+    <div id="yt"></div>
+    <div class="shield"></div>
+    <div class="bar-top"></div><div class="bar-bot"></div>
+    <div id="vidLoading" class="loading"><div class="spinner"></div><span>Se încarcă clipul…</span></div>
+  </div>
+  <div class="hud">
+    <div class="chip"><span class="label">Runda</span><b id="hudRound">1/5</b></div>
+    <div class="chip timer" id="timerChip"><span class="label">Timp</span><b id="hudTime">60</b></div>
+    <div class="chip"><span class="label">Scor</span><b id="hudScore">0</b></div>
+    <div class="spacer"></div>
+    <div class="chip" id="guessChip"><span class="label">Au ghicit</span><span id="guessDots" class="guessed-dots"></span></div>
+  </div>
+  <button id="soundBtn" class="btn small sound-btn">🔇 Pornește sunetul</button>
+  <div id="waitMsg" class="chip waiting" hidden>Ai ghicit. Așteptăm și ceilalți jucători…</div>
+  <div id="mapbox" class="mapbox">
+    <button id="mapToggle" class="btn small map-toggle">Arată harta</button>
+    <div id="guessMap"></div>
+    <button id="guessBtn" class="btn primary" disabled>Pune pinul pe hartă</button>
+  </div>
+</section>
+
+<!-- ============ DEZVĂLUIRE ============ -->
+<section id="reveal" hidden>
+  <div id="revealMap"></div>
+  <aside class="reveal-side">
+    <div class="answer">
+      <div class="label" id="revRoundLabel">Runda 1</div>
+      <h2 id="revPlace">—</h2>
+      <p id="revCoords" class="mono"></p>
+      <a id="revLink" class="yt-link" href="#" target="_blank" rel="noopener">Vezi clipul întreg pe YouTube ↗</a>
+    </div>
+    <ul id="revResults" class="results"></ul>
+    <button id="nextBtn" class="btn primary">Runda următoare</button>
+    <p id="nextWait" class="tag" hidden>Gazda pornește runda următoare…</p>
+  </aside>
+</section>
+
+<!-- ============ FINAL ============ -->
+<section id="final" class="screen" hidden>
+  <div class="card">
+    <div class="label">Joc terminat</div>
+    <h2 id="winner" class="winner">—</h2>
+    <ul id="finalList" class="players podium"></ul>
+    <div class="row">
+      <button id="againBtn" class="btn primary">Încă un joc</button>
+      <button id="homeBtn" class="btn">Ecran principal</button>
+    </div>
+    <p id="finalWait" class="tag" hidden>Gazda poate porni un joc nou.</p>
+  </div>
+</section>
+
+<!-- ============ EDITOR ============ -->
+<div id="editor" class="modal" hidden>
+  <div class="card">
+    <div class="row" style="align-items:center"><h2 style="font-size:20px">Clipurile mele</h2><button id="closeEd" class="btn small" style="flex:0 0 auto">Gata</button></div>
+    <p class="hint">Lipește linkul unui clip de pe YouTube, scrie numele locului și dă click pe hartă exact unde a fost filmat. Clipurile se salvează în browserul tău și le poți folosi când ești gazdă.</p>
+    <input id="edUrl" class="input" placeholder="https://www.youtube.com/watch?v=...">
+    <input id="edLabel" class="input" placeholder="Numele locului, ex. Curtea de Argeș, centru" maxlength="60">
+    <div id="editMap"></div>
+    <div class="row" style="align-items:center">
+      <span id="edCoords" class="mono hint">Niciun punct ales</span>
+      <button id="edAdd" class="btn primary" style="flex:0 0 auto">Adaugă clipul</button>
+    </div>
+    <p id="edErr" class="err" hidden></p>
+    <ul id="edList" class="cliplist"></ul>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>
+"use strict";
+/* ======================= DATE ======================= */
+// Pachetul de start: plimbări și drumuri filmate, cu locul aproximativ (centrul zonei).
+const PACK_LUME = [
+  {id:"rFIZwyCfUXQ", lat:35.6812, lng:139.7671, label:"Tokyo, Japonia"},
+  {id:"GDDjK2Ye5LQ", lat:35.6727, lng:139.8170, label:"Koto, Tokyo, Japonia"},
+  {id:"vfnArxBZSa4", lat:25.7826, lng:-80.1341, label:"Miami Beach, SUA"},
+  {id:"Kyafq7C8ubg", lat:51.5072, lng:-0.1276, label:"Londra, Marea Britanie"},
+  {id:"0bHn4tRCnek", lat:37.7879, lng:-122.4075, label:"San Francisco, SUA"},
+  {id:"o6jtvKlSEu4", lat:48.8566, lng:2.3522, label:"Paris, Franța"},
+  {id:"CK6esoMg2Uc", lat:50.0875, lng:14.4213, label:"Praga, Cehia"},
+  {id:"-UqMWkFMdC8", lat:44.4323, lng:26.1003, label:"București, România"},
+  {id:"9Fl4VnISQfA", lat:31.6258, lng:-7.9891, label:"Marrakech, Maroc"},
+  {id:"TgPvlP5VhRg", lat:41.0086, lng:28.9720, label:"Istanbul, Turcia"},
+  {id:"pEwGq4LbFq8", lat:30.0444, lng:31.2357, label:"Cairo, Egipt"},
+  {id:"rLv6SAzD_-w", lat:38.2870, lng:-111.2470, label:"Capitol Reef, Utah, SUA"},
+  {id:"CUSIDfYMT9g", lat:37.7430, lng:-112.3200, label:"Red Canyon, Utah, SUA"},
+  {id:"mpwH_sDuQjU", lat:50.2900, lng:2.7800, label:"Autostrada Calais–Paris, Franța"},
+  {id:"6MEeH7vUNCQ", lat:38.5000, lng:-98.0000, label:"Kansas, SUA"},
+  {id:"g38_oDN0_IA", lat:41.9668, lng:-121.9181, label:"Dorris, California, SUA"},
+];
+const COLORS = ["#ffb21f","#4fc3ff","#ff6b9a","#3ddc97","#b38cff","#ff8a3d","#e6ff4f","#5ef0e6"];
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const PEER_PREFIX = "geoclip-ro-";
+
+/* ======================= UTILE ======================= */
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+function store(k, v){ try{ if(v===undefined) return JSON.parse(localStorage.getItem(k)); localStorage.setItem(k, JSON.stringify(v)); }catch(e){ return null; } }
+function haversineKm(a, b){
+  const R = 6371, r = x => x*Math.PI/180;
+  const dLat = r(b.lat-a.lat), dLng = r(b.lng-a.lng);
+  const h = Math.sin(dLat/2)**2 + Math.cos(r(a.lat))*Math.cos(r(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.min(1, Math.sqrt(h)));
+}
+// Ca la GeoGuessr pe harta lumii: 5000 puncte la 0 km, scade exponențial.
+function scoreFor(km){ return km==null ? 0 : Math.round(5000*Math.exp(-km/1500)); }
+function fmtKm(km){ return km==null ? "fără răspuns" : km < 1 ? Math.round(km*1000)+" m" : km < 100 ? km.toFixed(1)+" km" : Math.round(km).toLocaleString("ro-RO")+" km"; }
+function fmtPts(n){ return n.toLocaleString("ro-RO"); }
+function randCode(){ let s=""; for(let i=0;i<5;i++) s+=CODE_CHARS[Math.floor(Math.random()*CODE_CHARS.length)]; return s; }
+function cleanName(s){ return (String(s||"").replace(/[^\p{L}\p{N} ._-]/gu,"").trim().slice(0,16)) || "Jucător"; }
+function ytId(url){
+  const m = String(url).trim().match(/(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  if(m) return m[1];
+  return /^[A-Za-z0-9_-]{11}$/.test(url.trim()) ? url.trim() : null;
+}
+let toastT;
+function toast(msg){ const t=$("toast"); t.textContent=msg; t.hidden=false; clearTimeout(toastT); toastT=setTimeout(()=>t.hidden=true, 3500); }
+function show(id){ for(const s of ["home","lobby","game","reveal","final"]) $(s).hidden = s!==id; }
+
+/* ======================= STARE ======================= */
+const me = { id:null, name:"", isHost:false };
+let peer=null, hostConn=null;          // client
+const conns = new Map();               // gazdă: peerId -> conexiune
+let view = { players:[], round:0, total:0, phase:"home" };
+let H = null;                          // starea gazdei
+
+/* ======================= HĂRȚI ======================= */
+const TILE = "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png";
+const ATTR = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>';
+function makeMap(el){
+  const m = L.map(el, {worldCopyJump:true, minZoom:1}).setView([25,10], 1);
+  L.tileLayer(TILE, {attribution:ATTR, subdomains:"abcd", maxZoom:19}).addTo(m);
+  return m;
+}
+const pinIcon = color => L.divIcon({className:"", html:`<div class="guess-pin" style="width:18px;height:18px;background:${color}"></div>`, iconSize:[18,18], iconAnchor:[9,9]});
+const flagIcon = L.divIcon({className:"flag-pin", html:"🚩", iconSize:[30,30], iconAnchor:[6,28]});
+let guessMap, revealMap, editMap, guessMarker=null, myGuess=null, revealLayer=null;
+
+/* ======================= YOUTUBE ======================= */
+let yt=null, ytReady=false, ytPending=null, clip=null, loopT=null;
+window.onYouTubeIframeAPIReady = () => {
+  yt = new YT.Player("yt", {
+    host:"https://www.youtube-nocookie.com",
+    playerVars:{controls:0, disablekb:1, modestbranding:1, rel:0, iv_load_policy:3, playsinline:1, fs:0, autoplay:1, mute:1, cc_load_policy:0},
+    events:{
+      onReady(){ ytReady=true; if(ytPending){ const p=ytPending; ytPending=null; playClip(p); } },
+      onStateChange(e){ onYtState(e.data); },
+      onError(e){ onYtError(e.data); }
+    }
+  });
+};
+(function loadYT(){ const s=document.createElement("script"); s.src="https://www.youtube.com/iframe_api"; document.head.appendChild(s); })();
+
+function playClip(c){
+  clip = {...c, started:false, start:0};
+  $("vidLoading").hidden = false;
+  if(!ytReady){ ytPending = c; return; }
+  yt.mute(); updateSound();
+  yt.loadVideoById({videoId:c.vid, startSeconds:0});
+}
+function onYtState(st){
+  if(!clip) return;
+  if(st===YT.PlayerState.PLAYING && !clip.started){
+    const d = yt.getDuration();
+    if(!d) return;
+    clip.started = true;
+    clip.start = Math.max(5, Math.min(d - clip.len - 5, d*clip.frac));
+    yt.seekTo(clip.start, true);
+    setTimeout(()=>{ $("vidLoading").hidden = true; }, 700);
+    clearInterval(loopT);
+    loopT = setInterval(()=>{
+      if(!clip || !clip.started) return;
+      const t = yt.getCurrentTime();
+      if(t > clip.start + clip.len || t < clip.start - 2) yt.seekTo(clip.start, true);
+    }, 400);
+  }
+  if(st===YT.PlayerState.ENDED && clip.started) yt.seekTo(clip.start, true);
+  if(st===YT.PlayerState.PAUSED && clip.started && view.phase==="round") yt.playVideo();
+}
+function onYtError(code){
+  if(!clip) return;
+  send({t:"clipErr", round:view.round, vid:clip.vid});
+}
+function stopClip(){ clip=null; clearInterval(loopT); if(ytReady){ try{ yt.stopVideo(); }catch(e){} } }
+function updateSound(){ const muted = !ytReady || yt.isMuted(); $("soundBtn").textContent = muted ? "🔇 Pornește sunetul" : "🔊 Oprește sunetul"; }
+$("soundBtn").onclick = () => { if(!ytReady) return; yt.isMuted() ? (yt.unMute(), yt.setVolume(80)) : yt.mute(); setTimeout(updateSound, 50); };
+
+/* ======================= REȚEA ======================= */
+function send(msg){
+  if(me.isHost) hostHandle(me.id, msg);
+  else if(hostConn && hostConn.open) hostConn.send(msg);
+}
+function broadcast(msg){
+  for(const c of conns.values()) if(c.open) c.send(msg);
+  onServer(msg);
+}
+function sendTo(id, msg){ if(id===me.id) onServer(msg); else { const c=conns.get(id); if(c&&c.open) c.send(msg); } }
+
+function peerOpts(){ return {debug:0}; }
+
+function createRoom(solo){
+  me.name = cleanName($("nameIn").value); store("gc-name", me.name);
+  me.isHost = true; me.id = "host";
+  H = { code:null, solo, players:new Map(), settings:{rounds:5, secs:60, len:30, pack:"lume"},
+        round:0, phase:"lobby", cur:null, used:new Set(), timer:null, colorIdx:0 };
+  addPlayer(me.id, me.name);
+  if(solo){ H.code = "SOLO"; enterLobby(); hostLobby(); return; }
+  const code = randCode();
+  setBusy(true);
+  peer = new Peer(PEER_PREFIX + code.toLowerCase(), peerOpts());
+  peer.on("open", () => { H.code = code; setBusy(false); enterLobby(); hostLobby(); history.replaceState(null,"","#"+code); });
+  peer.on("connection", c => {
+    c.on("open", () => { conns.set(c.peer, c); });
+    c.on("data", d => hostHandle(c.peer, d));
+    c.on("close", () => dropPlayer(c.peer));
+    c.on("error", () => dropPlayer(c.peer));
+  });
+  peer.on("error", e => {
+    setBusy(false);
+    if(e.type==="unavailable-id"){ peer.destroy(); createRoom(false); return; }
+    if(view.phase==="home") homeErr("Nu m-am putut conecta la serverul de camere. Verifică internetul și încearcă din nou.");
+    else toast("Problemă de conexiune: " + e.type);
+  });
+}
+
+function joinRoom(){
+  const code = $("codeIn").value.trim().toUpperCase();
+  if(!/^[A-Z0-9]{5}$/.test(code)) return homeErr("Codul are 5 caractere, ex. K7MPQ.");
+  me.name = cleanName($("nameIn").value); store("gc-name", me.name);
+  me.isHost = false;
+  setBusy(true);
+  peer = new Peer(peerOpts());
+  peer.on("open", id => {
+    me.id = id;
+    hostConn = peer.connect(PEER_PREFIX + code.toLowerCase(), {reliable:true});
+    const fail = setTimeout(() => { if(view.phase==="home"){ setBusy(false); homeErr("Camera "+code+" nu răspunde. Verifică codul sau roagă gazda să o creeze din nou."); peer.destroy(); } }, 9000);
+    hostConn.on("open", () => { clearTimeout(fail); hostConn.send({t:"hello", name:me.name}); view.code = code; history.replaceState(null,"","#"+code); });
+    hostConn.on("data", onServer);
+    hostConn.on("close", () => { if(view.phase!=="home"){ toast("Gazda a închis camera."); goHome(); } });
+  });
+  peer.on("error", e => {
+    setBusy(false);
+    if(e.type==="peer-unavailable") homeErr("Nu există nicio cameră cu codul "+code+".");
+    else homeErr("Nu m-am putut conecta. Încearcă din nou.");
+  });
+}
+function setBusy(b){ for(const id of ["createBtn","soloBtn","joinBtn"]) $(id).disabled = b; if(b) $("homeErr").hidden=true; }
+function homeErr(m){ $("homeErr").textContent=m; $("homeErr").hidden=false; }
+
+/* ======================= GAZDA ======================= */
+function addPlayer(id, name){
+  H.players.set(id, {id, name, score:0, color:COLORS[H.colorIdx++ % COLORS.length]});
+}
+function dropPlayer(id){
+  conns.delete(id);
+  if(!H || !H.players.has(id)) return;
+  const n = H.players.get(id).name;
+  H.players.delete(id);
+  broadcast({t:"toast", msg:n+" a ieșit din cameră."});
+  hostLobby();
+  if(H.phase==="round") maybeEndRound();
+}
+function playerList(){ return [...H.players.values()].map(p=>({id:p.id, name:p.name, score:p.score, color:p.color})); }
+function hostLobby(){ broadcast({t:"lobby", code:H.code, players:playerList(), settings:H.settings, phase:H.phase}); }
+
+function hostHandle(from, msg){
+  if(!msg || typeof msg!=="object") return;
+  switch(msg.t){
+    case "hello":
+      if(!H.players.has(from)) addPlayer(from, cleanName(msg.name));
+      hostLobby();
+      if(H.phase==="round") sendTo(from, roundMsg());
+      if(H.phase==="reveal") sendTo(from, H.lastReveal);
+      break;
+    case "guess": {
+      if(H.phase!=="round" || msg.round!==H.round || !H.players.has(from)) return;
+      const lat=+msg.lat, lng=+msg.lng;
+      if(!isFinite(lat)||!isFinite(lng)) return;
+      H.cur.guesses.set(from, {lat:Math.max(-85,Math.min(85,lat)), lng:((lng+540)%360)-180});
+      broadcast({t:"guessed", ids:[...H.cur.guesses.keys()]});
+      maybeEndRound();
+      break; }
+    case "clipErr":
+      if(H.phase==="round" && msg.round===H.round && msg.vid===H.cur.clip.id && !H.cur.swapped){
+        H.cur.swapped = true;
+        broadcast({t:"toast", msg:"Clipul nu poate fi redat, alegem altul."});
+        setTimeout(()=>{ H.cur.swapped=false; startRound(true); }, 400);
+      }
+      break;
+  }
+}
+function clipPool(){
+  const mine = store("gc-myclips") || [];
+  const s = H.settings.pack;
+  const pool = s==="lume" ? PACK_LUME : s==="mine" ? mine : PACK_LUME.concat(mine);
+  return pool.length ? pool : PACK_LUME;
+}
+function pickClip(){
+  const pool = clipPool();
+  let free = pool.filter(c=>!H.used.has(c.id));
+  if(!free.length){ H.used.clear(); free = pool; }
+  const c = free[Math.floor(Math.random()*free.length)];
+  H.used.add(c.id);
+  return c;
+}
+function hostStart(){
+  for(const p of H.players.values()) p.score = 0;
+  H.round = 0; H.used.clear();
+  nextRoundHost();
+}
+function nextRoundHost(){
+  if(H.round >= H.settings.rounds){
+    H.phase = "final";
+    broadcast({t:"final", players:playerList()});
+    return;
+  }
+  H.round++;
+  startRound(false);
+}
+function startRound(isSwap){
+  clearTimeout(H.timer);
+  H.phase = "round";
+  H.cur = { clip:pickClip(), frac:0.12+Math.random()*0.65, guesses:new Map(), endsAt:Date.now()+H.settings.secs*1000, swapped:false };
+  broadcast(roundMsg());
+  H.timer = setTimeout(endRoundHost, H.settings.secs*1000 + 800);
+}
+function roundMsg(){
+  return {t:"round", round:H.round, total:H.settings.rounds, vid:H.cur.clip.id, frac:H.cur.frac,
+          len:H.settings.len, msLeft:Math.max(0, H.cur.endsAt-Date.now()), players:playerList(), guessed:[...H.cur.guesses.keys()]};
+}
+function maybeEndRound(){
+  if(H.phase!=="round") return;
+  const all = [...H.players.keys()].every(id => H.cur.guesses.has(id));
+  if(all){ clearTimeout(H.timer); H.timer = setTimeout(endRoundHost, 700); }
+}
+function endRoundHost(){
+  if(H.phase!=="round") return;
+  clearTimeout(H.timer);
+  H.phase = "reveal";
+  const ans = H.cur.clip;
+  const results = [...H.players.values()].map(p=>{
+    const g = H.cur.guesses.get(p.id) || null;
+    const km = g ? haversineKm(g, ans) : null;
+    const pts = scoreFor(km);
+    p.score += pts;
+    return {id:p.id, name:p.name, color:p.color, guess:g, km, pts, total:p.score};
+  }).sort((a,b)=>b.pts-a.pts);
+  H.lastReveal = {t:"reveal", round:H.round, total:H.settings.rounds, answer:{lat:ans.lat, lng:ans.lng, label:ans.label, vid:ans.id}, results};
+  broadcast(H.lastReveal);
+}
+
+/* ======================= CLIENT (toți, inclusiv gazda) ======================= */
+let countdownT=null;
+function onServer(msg){
+  if(!msg || typeof msg!=="object") return;
+  switch(msg.t){
+    case "lobby":
+      view.players = msg.players; view.code = msg.code;
+      if(msg.phase==="lobby" || view.phase==="home") enterLobby();
+      renderLobby(msg);
+      break;
+    case "round": startRoundView(msg); break;
+    case "guessed": renderGuessDots(msg.ids); break;
+    case "reveal": showReveal(msg); break;
+    case "final": showFinal(msg); break;
+    case "toast": toast(msg.msg); break;
+  }
+}
+
+function enterLobby(){
+  view.phase = "lobby"; show("lobby"); stopClip();
+  const host = me.isHost;
+  $("hostSettings").hidden = !host; $("hostActions").hidden = !host; $("guestWait").hidden = host;
+  $("codeArea").hidden = !!(H && H.solo);
+  $("myCount").textContent = (store("gc-myclips")||[]).length;
+}
+function renderLobby(msg){
+  $("roomCode").textContent = msg.code || "-----";
+  $("lobbyPlayers").innerHTML = msg.players.map(p =>
+    `<li><span class="dot" style="background:${esc(p.color)}"></span>${esc(p.name)}${p.id===me.id?' <span class="me">(tu)</span>':""}${p.id==="host"?' <span class="me">· gazdă</span>':""}</li>`).join("");
+}
+
+function startRoundView(msg){
+  view.phase = "round"; view.round = msg.round; view.total = msg.total; view.players = msg.players;
+  show("game");
+  myGuess = null;
+  if(guessMarker){ guessMarker.remove(); guessMarker=null; }
+  $("guessBtn").disabled = true; $("guessBtn").textContent = "Pune pinul pe hartă";
+  $("waitMsg").hidden = true; $("mapbox").hidden = false;
+  $("hudRound").textContent = msg.round+"/"+msg.total;
+  const mine = msg.players.find(p=>p.id===me.id);
+  $("hudScore").textContent = fmtPts(mine ? mine.score : 0);
+  $("guessChip").hidden = msg.players.length < 2;
+  renderGuessDots(msg.guessed||[]);
+  setTimeout(()=>{ guessMap.invalidateSize(); guessMap.setView([25,10],1); }, 50);
+  playClip({vid:msg.vid, frac:msg.frac, len:msg.len});
+  const ends = Date.now() + msg.msLeft;
+  clearInterval(countdownT);
+  const tick = () => {
+    const s = Math.max(0, Math.ceil((ends-Date.now())/1000));
+    $("hudTime").textContent = s;
+    $("timerChip").classList.toggle("low", s<=10);
+    if(s<=0) clearInterval(countdownT);
+  };
+  tick(); countdownT = setInterval(tick, 250);
+}
+function renderGuessDots(ids){
+  const set = new Set(ids);
+  $("guessDots").innerHTML = view.players.map(p=>`<span class="dot ${set.has(p.id)?"on":""}" title="${esc(p.name)}" style="background:${esc(p.color)}"></span>`).join("");
+}
+function onMapClick(e){
+  if(view.phase!=="round" || $("guessBtn").textContent==="Trimis ✓") return;
+  myGuess = e.latlng.wrap();
+  const me_ = view.players.find(p=>p.id===me.id);
+  if(!guessMarker) guessMarker = L.marker(e.latlng, {icon:pinIcon(me_?me_.color:COLORS[0])}).addTo(guessMap);
+  else guessMarker.setLatLng(e.latlng);
+  $("guessBtn").disabled = false; $("guessBtn").textContent = "Ghicește!";
+}
+$("guessBtn").onclick = () => {
+  if(!myGuess) return;
+  send({t:"guess", round:view.round, lat:myGuess.lat, lng:myGuess.lng});
+  $("guessBtn").disabled = true; $("guessBtn").textContent = "Trimis ✓";
+  if(view.players.length > 1) $("waitMsg").hidden = false;
+  $("mapbox").classList.remove("big");
+};
+$("mapToggle").onclick = () => {
+  const b = $("mapbox").classList.toggle("big");
+  $("mapToggle").textContent = b ? "Ascunde harta" : "Arată harta";
+  setTimeout(()=>guessMap.invalidateSize(), 220);
+};
+$("mapbox").addEventListener("transitionend", ()=>guessMap.invalidateSize());
+
+function showReveal(msg){
+  view.phase = "reveal"; stopClip(); clearInterval(countdownT);
+  show("reveal");
+  $("revRoundLabel").textContent = "Runda "+msg.round+" din "+msg.total;
+  $("revPlace").textContent = msg.answer.label;
+  $("revCoords").textContent = msg.answer.lat.toFixed(4)+"°, "+msg.answer.lng.toFixed(4)+"°";
+  $("revLink").href = "https://www.youtube.com/watch?v="+encodeURIComponent(msg.answer.vid);
+  $("revResults").innerHTML = msg.results.map(r =>
+    `<li><span class="dot" style="background:${esc(r.color)}"></span><span>${esc(r.name)}${r.id===me.id?" (tu)":""}</span>
+      <span class="gain mono"><b>+${fmtPts(r.pts)}</b><span>total ${fmtPts(r.total)}</span></span>
+      <span class="dist mono">${fmtKm(r.km)}</span></li>`).join("");
+  const last = msg.round >= msg.total;
+  $("nextBtn").hidden = !me.isHost; $("nextWait").hidden = me.isHost;
+  $("nextBtn").textContent = last ? "Vezi clasamentul" : "Runda următoare";
+  setTimeout(()=>{
+    revealMap.invalidateSize();
+    if(revealLayer) revealLayer.remove();
+    revealLayer = L.layerGroup().addTo(revealMap);
+    const A = [msg.answer.lat, msg.answer.lng];
+    L.marker(A, {icon:flagIcon}).addTo(revealLayer).bindTooltip(esc(msg.answer.label));
+    const pts = [A];
+    for(const r of msg.results){
+      if(!r.guess) continue;
+      // alege copia longitudinii cea mai apropiată, ca linia să nu traverseze toată harta
+      let lng = r.guess.lng; while(lng - A[1] > 180) lng -= 360; while(A[1] - lng > 180) lng += 360;
+      const G = [r.guess.lat, lng];
+      L.polyline([G, A], {color:r.color, weight:3, dashArray:"6 6", opacity:.9}).addTo(revealLayer);
+      L.marker(G, {icon:pinIcon(r.color)}).addTo(revealLayer).bindTooltip(esc(r.name)+" · "+fmtKm(r.km));
+      pts.push(G);
+    }
+    if(pts.length>1) revealMap.fitBounds(pts, {padding:[50,50], maxZoom:12});
+    else revealMap.setView(A, 5);
+  }, 60);
+}
+$("nextBtn").onclick = () => { if(me.isHost && H.phase==="reveal") nextRoundHost(); };
+
+function showFinal(msg){
+  view.phase = "final"; stopClip(); show("final");
+  const ps = [...msg.players].sort((a,b)=>b.score-a.score);
+  const top = ps[0];
+  $("winner").textContent = ps.length>1 ? (top.id===me.id ? "Ai câștigat! 🏆" : top.name+" a câștigat 🏆") : fmtPts(top.score)+" puncte";
+  $("finalList").innerHTML = ps.map((p,i)=>`<li class="${i===0?"first":""}"><span class="mono">${i+1}.</span><span class="dot" style="background:${esc(p.color)}"></span>${esc(p.name)}${p.id===me.id?' <span class="me">(tu)</span>':""}<b class="pts mono">${fmtPts(p.score)}</b></li>`).join("");
+  $("againBtn").hidden = !me.isHost; $("finalWait").hidden = me.isHost;
+}
+$("againBtn").onclick = () => { if(!me.isHost) return; H.phase="lobby"; for(const p of H.players.values()) p.score=0; hostLobby(); };
+
+function goHome(){
+  stopClip(); clearInterval(countdownT);
+  if(H) clearTimeout(H.timer);
+  try{ if(peer) peer.destroy(); }catch(e){}
+  peer=null; hostConn=null; conns.clear(); H=null; me.isHost=false;
+  view = {players:[], round:0, total:0, phase:"home"};
+  history.replaceState(null,"",location.pathname);
+  setBusy(false); show("home");
+}
+$("homeBtn").onclick = goHome;
+$("leaveBtn").onclick = goHome;
+
+/* ======================= SETĂRI LOBBY ======================= */
+function readSettings(){
+  if(!H) return;
+  H.settings = {rounds:+$("setRounds").value, secs:+$("setSecs").value, len:+$("setLen").value, pack:$("setPack").value};
+  hostLobby();
+}
+for(const id of ["setRounds","setSecs","setLen","setPack"]) $(id).onchange = readSettings;
+$("startBtn").onclick = () => {
+  if(!me.isHost) return;
+  readSettings();
+  if(H.settings.pack==="mine" && !(store("gc-myclips")||[]).length){ toast("Nu ai încă clipuri proprii. Adaugă câteva sau alege alt pachet."); return; }
+  hostStart();
+};
+$("copyLink").onclick = async () => {
+  const link = location.origin + location.pathname + "#" + (H ? H.code : view.code);
+  try{ await navigator.clipboard.writeText(link); toast("Link copiat. Trimite-l prietenilor."); }
+  catch(e){ toast(link); }
+};
+
+/* ======================= EDITOR CLIPURI ======================= */
+let edPoint=null, edMarker=null;
+function renderEdList(){
+  const list = store("gc-myclips") || [];
+  $("myCount").textContent = list.length;
+  $("edList").innerHTML = list.length ? list.map((c,i)=>`<li><span>${esc(c.label)}</span><span class="mono hint">${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}</span><button class="btn small" data-del="${i}">Șterge</button></li>`).join("")
+    : `<li><span class="hint">Încă nu ai adăugat niciun clip.</span></li>`;
+}
+$("edList").onclick = e => {
+  const i = e.target.dataset.del; if(i===undefined) return;
+  const list = store("gc-myclips") || []; list.splice(+i,1); store("gc-myclips", list); renderEdList();
+};
+$("editClips").onclick = () => {
+  $("editor").hidden = false; renderEdList();
+  if(!editMap){ editMap = makeMap("editMap"); editMap.on("click", e => {
+    edPoint = e.latlng.wrap();
+    if(!edMarker) edMarker = L.marker(e.latlng, {icon:flagIcon}).addTo(editMap); else edMarker.setLatLng(e.latlng);
+    $("edCoords").textContent = edPoint.lat.toFixed(5)+", "+edPoint.lng.toFixed(5);
+  }); }
+  setTimeout(()=>editMap.invalidateSize(), 50);
+};
+$("closeEd").onclick = () => { $("editor").hidden = true; };
+$("edAdd").onclick = () => {
+  const id = ytId($("edUrl").value), label = $("edLabel").value.trim();
+  const err = m => { $("edErr").textContent=m; $("edErr").hidden=false; };
+  if(!id) return err("Linkul nu pare de pe YouTube. Lipește linkul complet al clipului.");
+  if(!label) return err("Scrie numele locului, apare la dezvăluire.");
+  if(!edPoint) return err("Dă click pe hartă unde a fost filmat clipul.");
+  $("edErr").hidden = true;
+  const list = store("gc-myclips") || [];
+  list.push({id, lat:+edPoint.lat.toFixed(5), lng:+edPoint.lng.toFixed(5), label:label.slice(0,60)});
+  store("gc-myclips", list);
+  $("edUrl").value=""; $("edLabel").value=""; edPoint=null; if(edMarker){ edMarker.remove(); edMarker=null; }
+  $("edCoords").textContent = "Niciun punct ales";
+  renderEdList(); toast("Clip adăugat.");
+};
+
+/* ======================= PORNIRE ======================= */
+$("createBtn").onclick = () => createRoom(false);
+$("soloBtn").onclick = () => createRoom(true);
+$("joinBtn").onclick = joinRoom;
+$("codeIn").addEventListener("keydown", e => { if(e.key==="Enter") joinRoom(); });
+$("nameIn").value = store("gc-name") || "";
+const hashCode = location.hash.slice(1).toUpperCase();
+if(/^[A-Z0-9]{5}$/.test(hashCode)) $("codeIn").value = hashCode;
+
+guessMap = makeMap("guessMap");
+guessMap.on("click", onMapClick);
+revealMap = makeMap("revealMap");
+</script>
+</body>
+</html>
